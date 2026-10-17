@@ -1,0 +1,28 @@
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: findit-api
+    env_file:
+      - ./backend/.env
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: 4000
+      FRONTEND_ORIGIN: http://localhost:8080
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:4000
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY}
+    container_name: findit-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
