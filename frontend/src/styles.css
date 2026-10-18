@@ -266,6 +266,15 @@ input:focus, select:focus, textarea:focus {
   transform: translate(-2px, -2px);
   box-shadow: 7px 7px 0 var(--ink);
 }
+.item-image {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  object-fit: cover;
+  border: 2px solid var(--ink);
+  margin: 0 0 18px;
+  background: #242424;
+}
 .card-top {
   display: flex;
   align-items: center;
@@ -286,6 +295,23 @@ input:focus, select:focus, textarea:focus {
 .type-pill.found { background: var(--green); color: var(--ink); }
 .status-dot { font-size: 11px; font-weight: 700; color: #9cff88; }
 .status-dot.resolved { color: #b4b4b4; }
+.status-dot.claimed, .status-dot.approved { color: #ffd166; }
+.status-dot.pending { color: #ffd166; }
+.status-dot.rejected { color: #ff8fb3; }
+.claim-card { min-height: 280px; }
+.claim-feedback {
+  color: #ffd166;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 12px;
+}
+.claim-action {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 2px dashed #777;
+}
+.claim-action .listing-form { margin-top: 8px; }
+.owner-actions .primary-button { width: auto; }
 .item-card h3 {
   font-family: 'Archivo Black', sans-serif;
   font-weight: 400;
@@ -364,6 +390,17 @@ input:focus, select:focus, textarea:focus {
   color: var(--ink);
   font-size: 12px;
   font-weight: 700;
+}
+.field-hint {
+  color: #bdbdbd;
+  font-size: 11px;
+  font-weight: 500;
+}
+.upload-progress {
+  display: block;
+  width: min(100%, 320px);
+  height: 12px;
+  accent-color: var(--green);
 }
 .form-grid {
   display: grid;

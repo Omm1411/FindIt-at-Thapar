@@ -4,6 +4,48 @@ import { useEffect, useMemo, useState } from "react";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const categories = ["Electronics", "ID Cards", "Books & Stationery", "Accessories", "Clothing", "Other"];
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function itemStatusLabel(status) {
+  if (status === "claimed") return "Claim approved · handover pending";
+  if (status === "resolved") return "✓ Resolved";
+  return "● Open";
+}
+
+function claimStatusLabel(status) {
+  if (status === "approved") return "Approved · arrange handover with the owner";
+  if (status === "rejected") return "Not approved · the item may still be available";
+  return "Pending owner review";
+}
+
+function uploadImage(itemId, file, token, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `${API}/api/items/${itemId}/image`);
+    request.setRequestHeader("Authorization", `Bearer ${token}`);
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    });
+    request.addEventListener("load", () => {
+      let data = {};
+      try { data = JSON.parse(request.responseText); } catch { /* handled below */ }
+      if (request.status >= 200 && request.status < 300) resolve(data);
+      else reject(new Error(data.error || "Image upload failed."));
+    });
+    request.addEventListener("error", () => reject(new Error("Could not reach the image upload service.")));
+    const body = new FormData();
+    body.append("image", file);
+    request.send(body);
+  });
+}
+
+function validateImage(file) {
+  if (!file) return "";
+  if (file.size > MAX_IMAGE_BYTES) return "Choose an image that is 5 MB or smaller.";
+  if (file.type && !IMAGE_TYPES.has(file.type)) return "Choose a JPEG, PNG, or WebP image.";
+  return "";
+}
 
 function App() {
   const [session, setSession] = useState(null);
@@ -19,6 +61,20 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [listingView, setListingView] = useState("all");
   const [myItemIds, setMyItemIds] = useState(() => new Set());
+  const [myItemsLoaded, setMyItemsLoaded] = useState(false);
+  const [myClaims, setMyClaims] = useState([]);
+  const [ownerClaims, setOwnerClaims] = useState([]);
+  const [claimLoading, setClaimLoading] = useState(false);
+  const [claimError, setClaimError] = useState("");
+  const [claimingItemId, setClaimingItemId] = useState(null);
+  const [claimExplanation, setClaimExplanation] = useState("");
+  const [submittingClaimId, setSubmittingClaimId] = useState(null);
+  const [decidingClaimId, setDecidingClaimId] = useState(null);
+  const [imageUrls, setImageUrls] = useState({});
+  const [formImageFile, setFormImageFile] = useState(null);
+  const [editImageFile, setEditImageFile] = useState(null);
+  const [uploadingItemId, setUploadingItemId] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [showForm, setShowForm] = useState(false);
   const [editingItemId, setEditingItemId] = useState(null);
   const [editForm, setEditForm] = useState({ title: "", type: "lost", category: "Electronics", location: "", date: "", description: "" });
@@ -98,8 +154,10 @@ function App() {
     async function loadMyItems() {
       if (!session?.access_token) {
         setMyItemIds(new Set());
+        setMyItemsLoaded(false);
         return;
       }
+      setMyItemsLoaded(false);
 
       try {
         const response = await fetch(`${API}/api/items/mine`, {
@@ -107,15 +165,99 @@ function App() {
         });
         if (!response.ok) throw new Error("Could not load your listings.");
         const data = await response.json();
-        if (!cancelled) setMyItemIds(new Set(data.map((item) => item.id)));
+        if (!cancelled) {
+          setMyItemIds(new Set(data.map((item) => item.id)));
+          setMyItemsLoaded(true);
+        }
       } catch {
-        if (!cancelled) setMyItemIds(new Set());
+        if (!cancelled) {
+          setMyItemIds(new Set());
+          setMyItemsLoaded(false);
+        }
       }
     }
 
     loadMyItems();
     return () => { cancelled = true; };
   }, [session]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadClaims() {
+      if (!session?.access_token) {
+        setMyClaims([]);
+        setOwnerClaims([]);
+        return;
+      }
+      try {
+        const response = await fetch(`${API}/api/claims/mine`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        if (!response.ok) throw new Error("Could not load your claims.");
+        const data = await response.json();
+        if (!cancelled) setMyClaims(data);
+      } catch {
+        if (!cancelled) setMyClaims([]);
+      }
+    }
+    loadClaims();
+    return () => { cancelled = true; };
+  }, [session]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadOwnerClaims() {
+      if (listingView !== "review" || !session?.access_token) return;
+      setClaimLoading(true);
+      setClaimError("");
+      try {
+        const response = await fetch(`${API}/api/claims/for-my-listings`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load listing claims.");
+        if (!cancelled) setOwnerClaims(data);
+      } catch (err) {
+        if (!cancelled) setClaimError(err.message);
+      } finally {
+        if (!cancelled) setClaimLoading(false);
+      }
+    }
+    loadOwnerClaims();
+    return () => { cancelled = true; };
+  }, [listingView, session]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshImageUrls() {
+      if (!session?.access_token) {
+        setImageUrls({});
+        return;
+      }
+      const imageItems = items.filter((item) => item.hasImage);
+      const pairs = await Promise.all(imageItems.map(async (item) => {
+        try {
+          const response = await fetch(`${API}/api/items/${item.id}/image-url`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          });
+          if (!response.ok) return [item.id, null];
+          const data = await response.json();
+          return [item.id, data.url];
+        } catch {
+          return [item.id, null];
+        }
+      }));
+      if (!cancelled) {
+        setImageUrls(Object.fromEntries(pairs.filter(([, url]) => url)));
+      }
+    }
+    refreshImageUrls();
+    const timer = window.setInterval(refreshImageUrls, 4 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [items, session]);
 
   const filtered = useMemo(() => items.filter((item) => {
     const haystack = `${item.title} ${item.description} ${item.category} ${item.location}`.toLowerCase();
@@ -125,6 +267,75 @@ function App() {
       && (categoryFilter === "all" || item.category === categoryFilter)
       && (listingView !== "mine" || myItemIds.has(item.id));
   }), [items, query, typeFilter, statusFilter, categoryFilter, listingView, myItemIds]);
+
+  const activeClaimItemIds = useMemo(
+    () => new Set(myClaims.filter((claim) => claim.status === "pending" || claim.status === "approved").map((claim) => claim.itemId)),
+    [myClaims],
+  );
+
+  async function refreshClaimLists() {
+    if (!session?.access_token) return;
+    const headers = { Authorization: `Bearer ${session.access_token}` };
+    const [mineResponse, ownerResponse] = await Promise.all([
+      fetch(`${API}/api/claims/mine`, { headers }),
+      fetch(`${API}/api/claims/for-my-listings`, { headers }),
+    ]);
+    const [mine, owned] = await Promise.all([mineResponse.json(), ownerResponse.json()]);
+    if (!mineResponse.ok || !ownerResponse.ok) {
+      throw new Error(mine.error || owned.error || "Could not refresh claims.");
+    }
+    setMyClaims(mine);
+    setOwnerClaims(owned);
+  }
+
+  async function submitClaim(event, itemId) {
+    event.preventDefault();
+    if (submittingClaimId) return;
+    setClaimError("");
+    setSubmittingClaimId(itemId);
+    try {
+      const response = await fetch(`${API}/api/items/${itemId}/claims`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ explanation: claimExplanation }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not submit your claim.");
+      setMyClaims((current) => [data, ...current.filter((claim) => claim.id !== data.id)]);
+      setClaimExplanation("");
+      setClaimingItemId(null);
+      setNotice("Your claim has been submitted for the listing owner's review.");
+    } catch (err) {
+      setClaimError(err.message);
+    } finally {
+      setSubmittingClaimId(null);
+    }
+  }
+
+  async function decideClaim(claimId, decision) {
+    if (decidingClaimId) return;
+    setClaimError("");
+    setDecidingClaimId(claimId);
+    try {
+      const response = await fetch(`${API}/api/claims/${claimId}/${decision}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not record the claim decision.");
+      await Promise.all([refreshClaimLists(), loadItems()]);
+      setNotice(decision === "approve"
+        ? "Claim approved. The item is marked claimed pending handover."
+        : "Claim rejected. The listing remains available to other claimants.");
+    } catch (err) {
+      setClaimError(err.message);
+    } finally {
+      setDecidingClaimId(null);
+    }
+  }
 
   
 async function submitItem(event) {
@@ -148,8 +359,26 @@ async function submitItem(event) {
       throw new Error(data.error || "Could not create listing.");
     }
 
-    setItems((current) => [data, ...current]);
+    let postedItem = data;
+    setItems((current) => [postedItem, ...current]);
     setMyItemIds((current) => new Set([...current, data.id]));
+
+    let uploadError = "";
+    let imageCleanupPending = false;
+    if (formImageFile) {
+      setUploadingItemId(data.id);
+      setUploadProgress(0);
+      try {
+        const imageResult = await uploadImage(data.id, formImageFile, session.access_token, setUploadProgress);
+        imageCleanupPending = Boolean(imageResult.cleanupPending);
+        postedItem = { ...data, hasImage: true };
+        setItems((current) => current.map((item) => item.id === data.id ? postedItem : item));
+      } catch (err) {
+        uploadError = `Listing posted, but its image could not be uploaded: ${err.message}`;
+      } finally {
+        setUploadingItemId(null);
+      }
+    }
 
     setForm({
       title: "",
@@ -161,7 +390,12 @@ async function submitItem(event) {
     });
 
     setShowForm(false);
-    setNotice("Your listing has been posted.");
+    if (formImageFile && !uploadError) setNotice(imageCleanupPending
+      ? "Your listing and image were posted; old image cleanup needs a retry."
+      : "Your listing and image have been posted.");
+    else if (!uploadError) setNotice("Your listing has been posted.");
+    if (uploadError) setError(uploadError);
+    setFormImageFile(null);
   } catch (err) {
     setError(err.message || "Could not create listing.");
   }
@@ -187,6 +421,7 @@ async function submitItem(event) {
 
   function startEditing(item) {
     setEditingItemId(item.id);
+    setEditImageFile(null);
     setEditForm({
       title: item.title,
       type: item.type,
@@ -215,11 +450,50 @@ async function submitItem(event) {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not update listing.");
-      setItems((current) => current.map((item) => item.id === id ? data : item));
+      let updatedItem = data;
+      setItems((current) => current.map((item) => item.id === id ? updatedItem : item));
+      let uploadError = "";
+      let imageCleanupPending = false;
+      if (editImageFile) {
+        setUploadingItemId(id);
+        setUploadProgress(0);
+        try {
+          const imageResult = await uploadImage(id, editImageFile, session.access_token, setUploadProgress);
+          imageCleanupPending = Boolean(imageResult.cleanupPending);
+          updatedItem = { ...data, hasImage: true };
+          setItems((current) => current.map((item) => item.id === id ? updatedItem : item));
+        } catch (err) {
+          uploadError = `Listing updated, but its image could not be uploaded: ${err.message}`;
+        } finally {
+          setUploadingItemId(null);
+        }
+      }
       setEditingItemId(null);
-      setNotice("Your listing has been updated.");
+      setEditImageFile(null);
+      if (uploadError) setError(uploadError);
+      else setNotice(imageCleanupPending
+        ? "Listing and image updated; old image cleanup needs a retry."
+        : editImageFile ? "Listing and image updated." : "Your listing has been updated.");
     } catch (err) {
       setError(err.message || "Could not update listing.");
+    }
+  }
+
+  async function removeItemImage(id) {
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(`${API}/api/items/${id}/image`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not remove image.");
+      setItems((current) => current.map((item) => item.id === id ? { ...item, hasImage: false } : item));
+      setImageUrls((current) => { const next = { ...current }; delete next[id]; return next; });
+      setNotice(data.cleanupPending ? "Image removed; storage cleanup will need a retry." : "Image removed.");
+    } catch (err) {
+      setError(err.message || "Could not remove image.");
     }
   }
 
@@ -242,7 +516,9 @@ async function submitItem(event) {
         return next;
       });
       if (editingItemId === id) setEditingItemId(null);
-      setNotice("Your listing has been deleted.");
+      setNotice(data.cleanupPending
+        ? "Your listing was deleted; image storage cleanup needs a retry."
+        : "Your listing has been deleted.");
     } catch (err) {
       setError(err.message || "Could not delete listing.");
     }
@@ -495,9 +771,35 @@ return (
                 />
               </label>
 
-              <button className="primary-button" type="submit">
-                Publish listing
+              <label>
+                Item photo (optional)
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] || null;
+                    const problem = validateImage(file);
+                    if (problem) {
+                      setFormImageFile(null);
+                      setError(problem);
+                      event.target.value = "";
+                      return;
+                    }
+                    setError("");
+                    setFormImageFile(file);
+                  }}
+                />
+                <span className="field-hint">JPEG, PNG, or WebP, up to 5 MB. {formImageFile?.name || ""}</span>
+              </label>
+
+              <button className="primary-button" type="submit" disabled={uploadingItemId !== null}>
+                {uploadingItemId && !items.some((item) => item.id === uploadingItemId)
+                  ? `Uploading ${uploadProgress}%…`
+                  : "Publish listing"}
               </button>
+              {uploadingItemId && !items.some((item) => item.id === uploadingItemId) && (
+                <progress className="upload-progress" max="100" value={uploadProgress} aria-label="Image upload progress" />
+              )}
             </form>
           </section>
         )}
@@ -506,10 +808,10 @@ return (
           <div className="section-heading">
             <div>
               <p className="eyebrow">THE CAMPUS BOARD</p>
-              <h2>Recent listings</h2>
+              <h2>{listingView === "claims" ? "My Claims" : listingView === "review" ? "Claims for My Listings" : "Recent listings"}</h2>
             </div>
             <span className="result-count">
-              {filtered.length} LISTINGS
+              {listingView === "claims" ? `${myClaims.length} CLAIMS` : listingView === "review" ? `${ownerClaims.length} CLAIMS` : `${filtered.length} LISTINGS`}
             </span>
           </div>
 
@@ -521,6 +823,8 @@ return (
             >
               <option value="all">Campus board</option>
               <option value="mine">My listings</option>
+              <option value="claims">My claims</option>
+              <option value="review">Claims for my listings</option>
             </select>
 
             <div className="searchbox">
@@ -560,6 +864,7 @@ return (
               onChange={(e) => setStatusFilter(e.target.value)}
             >
               <option value="open">Open</option>
+              <option value="claimed">Claimed · handover pending</option>
               <option value="resolved">Resolved</option>
               <option value="all">All statuses</option>
             </select>
@@ -567,8 +872,58 @@ return (
 
           {error && <div className="message error">{error}</div>}
           {notice && <div className="message success">{notice}</div>}
+          {claimError && <div className="message error">{claimError}</div>}
 
-          {loading ? (
+          {listingView === "claims" ? (
+            myClaims.length === 0 ? (
+              <div className="empty"><span>◎</span><h3>No claims yet</h3><p>Claims you submit for found items will appear here.</p></div>
+            ) : (
+              <div className="card-grid">
+                {myClaims.map((claim) => (
+                  <article className="item-card claim-card" key={claim.id}>
+                    <div className="card-top"><span className="type-pill found">MY CLAIM</span><span className={`status-dot ${claim.status}`}>{claimStatusLabel(claim.status)}</span></div>
+                    <h3>{claim.item?.title || "Listing unavailable"}</h3>
+                    {claim.item && <p className="field-hint">{claim.item.location} · {claim.item.date}</p>}
+                    <p className="description">{claim.explanation}</p>
+                    <div className="meta"><span>Submitted {new Date(claim.createdAt).toLocaleDateString()}</span>{claim.decidedAt && <span>Decision {new Date(claim.decidedAt).toLocaleDateString()}</span>}</div>
+                    <p className="claim-feedback">{claimStatusLabel(claim.status)}</p>
+                  </article>
+                ))}
+              </div>
+            )
+          ) : listingView === "review" ? (
+            claimLoading ? <p className="empty">Loading claims for your listings…</p> : ownerClaims.length === 0 ? (
+              <div className="empty"><span>◎</span><h3>No claims to review</h3><p>Claims on your found-item listings will appear here.</p></div>
+            ) : (
+              <div className="card-grid">
+                {ownerClaims.map((claim) => (
+                  <article className="item-card claim-card" key={claim.id}>
+                    <div className="card-top"><span className="type-pill found">CLAIM FOR YOUR ITEM</span><span className={`status-dot ${claim.status}`}>{claimStatusLabel(claim.status)}</span></div>
+                    <h3>{claim.item?.title || "Your listing"}</h3>
+                    {claim.item && <p className="field-hint">{claim.item.location} · {claim.item.date}</p>}
+                    <p className="description"><strong>Why they say it belongs to them:</strong><br />{claim.explanation}</p>
+                    <div className="meta"><span>Submitted {new Date(claim.createdAt).toLocaleDateString()}</span></div>
+                    {claim.status === "pending" && (
+                      <div className="owner-actions">
+                        <button className="primary-button" disabled={decidingClaimId !== null} onClick={() => decideClaim(claim.id, "approve")}>
+                          {decidingClaimId === claim.id ? "Saving…" : "Approve claim"}
+                        </button>
+                        <button className="text-button" disabled={decidingClaimId !== null} onClick={() => decideClaim(claim.id, "reject")}>Reject</button>
+                      </div>
+                    )}
+                    {claim.status === "approved" && (
+                      <>
+                        <p className="claim-feedback">Approved. Arrange a handover; the item remains claimed until you mark it resolved.</p>
+                        <button className="text-button" type="button" onClick={() => { setListingView("mine"); setStatusFilter("claimed"); }}>
+                          View item for handover ↗
+                        </button>
+                      </>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )
+          ) : loading ? (
             <p className="empty">Loading listings...</p>
           ) : filtered.length === 0 ? (
             <div className="empty">
@@ -587,9 +942,7 @@ return (
                         : "FOUND ITEM"}
                     </span>
                     <span className={`status-dot ${item.status}`}>
-                      {item.status === "open"
-                        ? "● Open"
-                        : "✓ Resolved"}
+                      {itemStatusLabel(item.status)}
                     </span>
                   </div>
 
@@ -619,11 +972,32 @@ return (
                       <label>Description
                         <textarea required maxLength="1000" rows="3" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} />
                       </label>
-                      <button className="primary-button" type="submit">Save changes</button>
+                      <label>Replace image (optional)
+                        <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => {
+                          const file = event.target.files?.[0] || null;
+                          const problem = validateImage(file);
+                          if (problem) {
+                            setEditImageFile(null);
+                            setError(problem);
+                            event.target.value = "";
+                            return;
+                          }
+                          setError("");
+                          setEditImageFile(file);
+                        }} />
+                        <span className="field-hint">JPEG, PNG, or WebP, up to 5 MB. {editImageFile?.name || ""}</span>
+                      </label>
+                      <button className="primary-button" type="submit" disabled={uploadingItemId === item.id}>
+                        {uploadingItemId === item.id ? `Uploading ${uploadProgress}%…` : "Save changes"}
+                      </button>
+                      {uploadingItemId === item.id && <progress className="upload-progress" max="100" value={uploadProgress} aria-label="Image upload progress" />}
                       <button className="text-button" type="button" onClick={() => setEditingItemId(null)}>Cancel</button>
                     </form>
                   ) : (
                     <>
+                      {item.hasImage && imageUrls[item.id] && (
+                        <img className="item-image" src={imageUrls[item.id]} alt={`Photo of ${item.title}`} loading="lazy" />
+                      )}
                       <h3>{item.title}</h3>
                       <p className="description">{item.description}</p>
                     </>
@@ -637,15 +1011,39 @@ return (
 
                   {myItemIds.has(item.id) && (
                     <div className="owner-actions">
-                      {item.status === "open" && (
+                      {uploadingItemId === item.id && <span className="field-hint">Uploading photo: {uploadProgress}%</span>}
+                      {item.hasImage && (
+                        <button className="text-button" onClick={() => removeItemImage(item.id)}>Remove photo</button>
+                      )}
+                      {(item.status === "open" || item.status === "claimed") && (
                         <button className="text-button" onClick={() => resolveItem(item.id)}>
-                          Mark resolved ↗
+                          {item.status === "claimed" ? "Mark handover complete ↗" : "Mark resolved ↗"}
                         </button>
                       )}
                       {editingItemId !== item.id && (
                         <button className="text-button" onClick={() => startEditing(item)}>Edit</button>
                       )}
                       <button className="text-button" onClick={() => deleteItem(item.id)}>Delete</button>
+                    </div>
+                  )}
+                  {item.type === "found" && item.status === "open" && myItemsLoaded && !myItemIds.has(item.id) && (
+                    <div className="claim-action">
+                      {activeClaimItemIds.has(item.id) ? (
+                        <button className="primary-button" type="button" disabled>Claim pending</button>
+                      ) : claimingItemId === item.id ? (
+                        <form className="listing-form" onSubmit={(event) => submitClaim(event, item.id)}>
+                          <label>Why does this item belong to you?
+                            <textarea required minLength="1" maxLength="500" rows="3" value={claimExplanation} onChange={(event) => setClaimExplanation(event.target.value)} placeholder="Share details that help the owner identify the item." />
+                          </label>
+                          <span className="field-hint">Keep sensitive information private. Maximum 500 characters.</span>
+                          <button className="primary-button" type="submit" disabled={submittingClaimId !== null || !claimExplanation.trim()}>
+                            {submittingClaimId === item.id ? "Submitting…" : "Submit claim"}
+                          </button>
+                          <button className="text-button" type="button" disabled={submittingClaimId !== null} onClick={() => { setClaimingItemId(null); setClaimExplanation(""); }}>Cancel</button>
+                        </form>
+                      ) : (
+                        <button className="primary-button" type="button" onClick={() => { setClaimingItemId(item.id); setClaimExplanation(""); setClaimError(""); }}>Claim Item</button>
+                      )}
                     </div>
                   )}
                 </article>

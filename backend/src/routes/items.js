@@ -1,16 +1,27 @@
 
 import { Router } from "express";
 import { supabase } from "../lib/supabase.js";
+import { requireUser as defaultRequireUser } from "../middleware/requireUser.js";
+import { deleteStoredImage, isListingImageKey } from "./itemImages.js";
+import { s3Client } from "../lib/s3.js";
 
+export function createItemsRouter({
+  db = supabase,
+  s3 = s3Client,
+  bucket = process.env.S3_BUCKET,
+  auth = defaultRequireUser,
+} = {}) {
 const router = Router();
 
 const PUBLIC_FIELDS =
-  "id, title, type, category, location, date, description, status, created_at";
+  "id, title, type, category, location, date, description, status, created_at, image_object_key";
 
 function formatItem(item) {
+  const { image_object_key: imageObjectKey, ...publicItem } = item;
   return {
-    ...item,
-    createdAt: item.created_at,
+    ...publicItem,
+    hasImage: Boolean(imageObjectKey),
+    createdAt: publicItem.created_at,
   };
 }
 
@@ -42,34 +53,9 @@ function reportDatabaseError(operation, error) {
   console.error(`[items] ${operation} failed:`, error.message);
 }
 
-// Verify the Supabase access token supplied by the frontend.
-async function requireUser(req, res, next) {
-  const authorization = req.headers.authorization || "";
-  const token = authorization.startsWith("Bearer ")
-    ? authorization.slice(7).trim()
-    : "";
-
-  if (!token) {
-    return res.status(401).json({
-      error: "Please sign in to perform this action.",
-    });
-  }
-
-  const { data, error } = await supabase.auth.getUser(token);
-
-  if (error || !data.user) {
-    return res.status(401).json({
-      error: "Your session is invalid or expired. Please sign in again.",
-    });
-  }
-
-  req.user = data.user;
-  next();
-}
-
 // GET /api/items - Public listing board
 router.get("/", async (req, res) => {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("items")
     .select(PUBLIC_FIELDS)
     .order("created_at", { ascending: false });
@@ -84,10 +70,10 @@ router.get("/", async (req, res) => {
   return res.json(data.map(formatItem));
 });
 // GET /api/items/mine - Listings owned by the signed-in user
-router.get("/mine", requireUser, async (req, res) => {
-  const { data, error } = await supabase
+router.get("/mine", auth, async (req, res) => {
+  const { data, error } = await db
     .from("items")
-    .select("id, title, type, category, location, date, description, status, created_at")
+    .select(PUBLIC_FIELDS)
     .eq("user_id", req.user.id)
     .order("created_at", { ascending: false });
 
@@ -106,7 +92,7 @@ router.get("/:id", async (req, res) => {
     return res.status(400).json({ error: "Invalid listing ID." });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("items")
     .select(PUBLIC_FIELDS)
     .eq("id", req.params.id)
@@ -127,7 +113,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // POST /api/items - Signed-in users only
-router.post("/", requireUser, async (req, res) => {
+router.post("/", auth, async (req, res) => {
   const body = req.body ?? {};
   const { title, type, category, location, date, description } = body;
 
@@ -154,7 +140,7 @@ router.post("/", requireUser, async (req, res) => {
     });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("items")
     .insert({
       title: title.trim(),
@@ -178,7 +164,7 @@ router.post("/", requireUser, async (req, res) => {
   return res.status(201).json(formatItem(data));
 });
 
-router.patch("/:id", requireUser, async (req, res) => {
+router.patch("/:id", auth, async (req, res) => {
   const { title, type, category, location, date, description } = req.body ?? {};
 
   const valid =
@@ -193,7 +179,7 @@ router.patch("/:id", requireUser, async (req, res) => {
     return res.status(400).json({ error: "Please check your listing details." });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("items")
     .update({
       title: title.trim(),
@@ -205,7 +191,7 @@ router.patch("/:id", requireUser, async (req, res) => {
     })
     .eq("id", req.params.id)
     .eq("user_id", req.user.id)
-    .select("id, title, type, category, location, date, description, status, created_at")
+    .select(PUBLIC_FIELDS)
     .maybeSingle();
 
   if (error) {
@@ -220,13 +206,29 @@ router.patch("/:id", requireUser, async (req, res) => {
   return res.json(formatItem(data));
 });
 
-router.delete("/:id", requireUser, async (req, res) => {
-  const { data, error } = await supabase
+router.delete("/:id", auth, async (req, res) => {
+  const { data: current, error: lookupError } = await db
+    .from("items")
+    .select("id, user_id, image_object_key")
+    .eq("id", req.params.id)
+    .maybeSingle();
+  if (lookupError) {
+    console.error("Delete listing lookup failed:", lookupError.message);
+    return res.status(500).json({ error: "Could not delete listing." });
+  }
+  if (!current || current.user_id !== req.user.id) {
+    return res.status(404).json({ error: "Listing not found, or you do not own it." });
+  }
+  if (current.image_object_key && !bucket) {
+    return res.status(503).json({ error: "Image storage is not configured; listing was not deleted." });
+  }
+
+  const { data, error } = await db
     .from("items")
     .delete()
     .eq("id", req.params.id)
     .eq("user_id", req.user.id)
-    .select("id")
+    .select("id, image_object_key")
     .maybeSingle();
 
   if (error) {
@@ -238,21 +240,27 @@ router.delete("/:id", requireUser, async (req, res) => {
     return res.status(404).json({ error: "Listing not found, or you do not own it." });
   }
 
-  return res.json({ success: true });
+  let cleanupPending = false;
+  if (data.image_object_key) {
+    if (!isListingImageKey(data.id, data.image_object_key)) cleanupPending = true;
+    else cleanupPending = !(await deleteStoredImage(s3, bucket, data.image_object_key));
+  }
+
+  return res.json({ success: true, cleanupPending });
 });
 
 // PATCH /api/items/:id/resolve - Only the owner can resolve
-router.patch("/:id/resolve", requireUser, async (req, res) => {
+router.patch("/:id/resolve", auth, async (req, res) => {
   if (!isValidUUID(req.params.id)) {
     return res.status(400).json({ error: "Invalid listing ID." });
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("items")
     .update({ status: "resolved" })
     .eq("id", req.params.id)
     .eq("user_id", req.user.id)
-    .eq("status", "open")
+    .in("status", ["open", "claimed"])
     .select(PUBLIC_FIELDS)
     .maybeSingle();
 
@@ -265,11 +273,14 @@ router.patch("/:id/resolve", requireUser, async (req, res) => {
 
   if (!data) {
     return res.status(404).json({
-      error: "Open listing not found, or you do not own it.",
+      error: "Listing not found, or you do not own an open or claimed listing.",
     });
   }
 
   return res.json(formatItem(data));
 });
 
-export default router;
+return router;
+}
+
+export default createItemsRouter();
