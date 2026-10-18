@@ -1,201 +1,214 @@
 # FindIt@Thapar
 
-A campus-focused lost-and-found web application that helps students report lost items, share found items, and manage their listings.
+**A Campus Lost and Found Community Platform**
+
+FindIt@Thapar is a web application designed to help students report lost belongings, discover found items, and connect owners with people who may have found their possessions. It provides a central place for campus members to manage listings and coordinate the return of items.
 
 ## Features
 
-- User authentication using Supabase Auth
-- Create lost and found listings
-- Browse and search item listings
-- Filter listings by relevant attributes
-- View personal listings
-- Edit and delete your own listings
-- Mark listings as resolved
-- Ownership checks for listing management
-- Upload, replace, and remove listing photos (JPEG, PNG, or WebP up to 5 MB)
+- **User authentication:** Sign up and log in using Supabase Authentication.
+- **Lost and found listings:** Create and browse item listings.
+- **Search and categorization:** Find listings using available search and category filters.
+- **Listing management:** Edit your own listings and delete them when appropriate.
+- **Image uploads:** Upload, view, replace, and remove item images using private Amazon S3 storage and temporary signed URLs.
+- **Claim system:** Submit claims explaining why an item belongs to you.
+- **Claim review:** Listing owners can review, approve, or reject claims.
+- **Handover tracking:** Approved claims move an item to a claimed state. The owner can mark it resolved after the item has been returned.
+- **Access control:** The backend verifies authenticated requests, and claim information is restricted to the relevant claimant and listing owner.
 
 ## Technology Stack
 
-| Component | Technology | Purpose |
-|---|---|---|
-| Frontend | React, Vite, CSS | User interface |
-| Backend | Node.js, Express | REST API and application logic |
-| Database | Supabase PostgreSQL | Store item listings |
-| Authentication | Supabase Auth | User authentication |
-| Image storage | Private Amazon S3 | Store listing photos; the API issues short-lived viewing URLs |
-| Containerization | Docker | Package and run the frontend and backend consistently |
-| Version control | Git, GitHub | Track and share source code |
+| Component | Technology |
+|---|---|
+| Frontend | React, Vite, JavaScript, CSS |
+| Backend | Node.js, Express.js |
+| Database | Supabase PostgreSQL |
+| Authentication | Supabase Auth |
+| Image storage | Amazon S3 |
+| API security | Supabase access-token verification |
+| Containerization | Docker, Docker Compose |
+| Version control | Git, GitHub |
 
-## System Architecture
+## Architecture
 
-```mermaid
-flowchart TD
-    U[Student] --> FE[React Frontend<br/>Vite on localhost:5173 or Compose on localhost:8080]
-    FE --> AUTH[Supabase Auth]
-    FE --> API[Express REST API<br/>Docker container on port 4000]
-    API --> DB[Supabase PostgreSQL]
-    API --> AUTH
-    API --> S3[Private Amazon S3 bucket]
-```
-
-The frontend communicates with Supabase for authentication and with the Express API for backend operations. The API validates user access and uses Supabase to access item data.
-
-Docker Compose can build and run both the frontend and backend. The frontend can also run separately using Vite during development.
-
-## Project Structure
+The frontend communicates with the Express backend through HTTP API requests. Supabase provides authentication and PostgreSQL database services, while Amazon S3 stores uploaded item images.
 
 ```text
-FindIt-at-Thapar/
-├── backend/
-│   ├── src/
-│   │   ├── lib/
-│   │   ├── routes/
-│   │   └── server.js
-│   ├── .dockerignore
-│   ├── .env.example
-│   ├── Dockerfile
-│   └── package.json
-├── frontend/
-│   ├── src/
-│   ├── .env.example
-│   └── package.json
-├── .gitignore
-└── README.md
+                 Student / User
+                       |
+                       v
+              React + Vite Frontend
+                       |
+                       v
+                Express Backend
+                 /            \
+                v              v
+       Supabase Services     Amazon S3
+       - Authentication     - Item images
+       - PostgreSQL         - Private objects
+       - Claim records      - Signed URLs
 ```
 
-## Prerequisites
+The application uses cloud services for authentication, database operations, and image storage. The frontend and backend can be run locally using Docker Compose.
+
+## Getting Started
+
+### Prerequisites
+
+Install the following:
 
 - Node.js and npm
-- Docker Desktop
-- A configured Supabase project
-- Git
+- Docker Desktop with Docker Compose
+- A Supabase project
+- An AWS account and an appropriately configured S3 bucket
 
-## Configuration
-
-### Backend
-
-Create `backend/.env` using `backend/.env.example` as a reference. Both the Docker Compose workflow and the standalone backend container read this file for backend settings and the server-only Supabase secret key.
-
-Configure these variables with your own values:
-
-```dotenv
-PORT=4000
-FRONTEND_ORIGIN=http://localhost:5173
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SECRET_KEY=your_supabase_secret_key
-AWS_REGION=ap-southeast-2
-S3_BUCKET=your-private-image-bucket-name
-```
-
-The backend uses the AWS SDK default credential chain. For local Docker Compose access to an existing bucket, make credentials available to the backend container through its ignored `backend/.env` file (for example, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and an optional `AWS_SESSION_TOKEN`). Never commit those values. In production, use an EC2 instance role scoped to the image bucket and omit static keys. The bucket must remain private with S3 Block Public Access enabled. Do not put AWS credentials or image URLs in frontend environment files. Without `S3_BUCKET` and working AWS credentials, listings remain usable but image endpoints report that storage is unavailable.
-
-Before running the updated API, apply the checked-in SQL migration `supabase/migrations/20261019000000_add_items_image_object_key.sql` to the intended Supabase project. This repository does not apply database migrations automatically.
-
-### Frontend
-
-Create `frontend/.env` using `frontend/.env.example` as a reference. It contains the API URL, Supabase project URL, and Supabase publishable key required by the frontend. The publishable key is used in the browser; never put the backend secret key in this file.
-
-**Security:** Never commit real `.env` files or secret keys to GitHub. Keep the backend Supabase secret key server-side only.
-
-## Running the Application
-
-Choose one of these local workflows. Run commands from the project root unless stated otherwise.
-
-### Docker Compose
-
-Create `backend/.env` and `frontend/.env` from their respective example files, then fill in your local Supabase project URL and keys. Compose reads backend settings from `backend/.env`; pass `frontend/.env` explicitly so Compose can use its values as frontend build arguments:
+### 1. Clone the repository
 
 ```bash
-docker compose --env-file frontend/.env up --build
+git clone <YOUR_GITHUB_REPOSITORY_URL>
+cd FindIt-at-Thapar
 ```
 
-The frontend is available at http://localhost:8080 and the API at http://localhost:4000. The API URL defaults to `http://localhost:4000`; override `VITE_API_URL` in `frontend/.env` if needed. Compose sets the backend CORS origin to `http://localhost:8080` for this workflow. The two Supabase frontend build arguments are required; Compose reports which value is missing if either is unset.
+Replace the placeholder with the actual GitHub repository URL.
 
-Stop the stack with `Ctrl+C`, or run `docker compose down` from another terminal.
+### 2. Configure environment variables
 
-### Vite development frontend and Docker backend
-
-Create `backend/.env` and `frontend/.env` from their respective example files. Run the backend container as described below, then start Vite:
-
-#### 1. Build the backend Docker image
+Create local environment files from the provided examples:
 
 ```bash
-docker build -t findit-backend ./backend
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 ```
 
-#### 2. Start the backend container
+Fill in the required values using the variable names documented in the example files. These may include:
+
+- Supabase project URL and the appropriate API keys
+- Backend port and frontend API URL
+- AWS region and S3 bucket configuration
+- Other settings required by the Docker Compose configuration
+
+Never commit real credentials, access keys, tokens, or secret environment files to GitHub.
+
+### 3. Configure Supabase
+
+Make sure your Supabase project has the required database schema and authentication configuration.
+
+Review and apply the SQL migrations in `supabase/migrations/` to the intended Supabase project:
+
+- `20261019000000_add_items_image_object_key.sql`
+- `20261019000100_add_item_claims.sql`
+
+Apply only migrations that have not already been applied. Verify that each migration completes successfully.
+
+Configure the Supabase Authentication settings and redirect URLs as appropriate for your local or deployed application.
+
+### 4. Configure Amazon S3
+
+Create or select an S3 bucket for item images. Configure the backend with the correct bucket name, region, and permissions.
+
+The bucket should remain private. The application uses signed URLs to provide temporary access to stored images. Do not make the bucket public merely to display uploaded images.
+
+The backend should use appropriately scoped AWS permissions. For a deployed application on AWS, prefer an IAM role over long-lived access keys where supported.
+
+### 5. Start the application
+
+From the repository root, run:
 
 ```bash
-docker run --name findit-api \
-  --env-file backend/.env \
-  -p 4000:4000 \
-  findit-backend
+docker compose --env-file frontend/.env up --build -d
 ```
 
-Keep this terminal open while the container is running.
+Once the containers start, open:
 
-If a container named `findit-api` already exists, stop and remove it before recreating it:
+**Frontend:** http://localhost:8080
+
+The backend API runs on port `4000` in the current local configuration.
+
+To inspect running containers:
 
 ```bash
-docker stop findit-api
-docker rm findit-api
+docker compose ps
 ```
 
-Then run the start command again. Rebuild the image first if you have changed the backend source code or Dockerfile.
-
-#### 3. Verify the backend
-
-Open another terminal and run:
+To inspect logs:
 
 ```bash
-curl http://localhost:4000/api/health
+docker compose logs -f
 ```
 
-Expected response:
+To stop the application:
 
-```json
-{
-  "status": "ok",
-  "service": "FindIt@Thapar API"
-}
+```bash
+docker compose down
 ```
 
-#### 4. Start the frontend
+## Item Claim Workflow
 
-Open another terminal:
+1. A user creates a found-item listing.
+2. Another authenticated user submits a claim with an explanation.
+3. The claimant can view their claims, while the listing owner can review claims associated with their listings.
+4. The owner approves or rejects a claim.
+5. An approved claim moves the listing to the claimed state while the physical handover is pending.
+6. After the item has been returned, the owner marks the listing as resolved.
+
+The backend validates the user's identity and permissions. It also prevents invalid claims and coordinates claim decisions with listing status changes.
+
+## API Overview
+
+The backend exposes endpoints for listing management, image operations, and claims.
+
+### Claims API
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| POST | `/api/items/:id/claims` | Submit a claim |
+| GET | `/api/claims/mine` | View your claims |
+| GET | `/api/claims/for-my-listings` | View claims on your listings |
+| GET | `/api/items/:id/claims` | Retrieve claims for an eligible listing |
+| POST | `/api/claims/:id/approve` | Approve a claim |
+| POST | `/api/claims/:id/reject` | Reject a claim |
+
+Authenticated endpoints require a valid Supabase access token. The backend derives the claimant and reviewer identities from the verified token rather than trusting user IDs supplied by the client.
+
+## Testing
+
+Backend tests are located in `backend/test/`. They cover item routes, claim operations, and image-related functionality.
+
+From the backend directory, install dependencies and run the configured test script:
+
+```bash
+cd backend
+npm install
+npm test
+```
+
+Check `backend/package.json` for the available test scripts.
+
+Build the frontend from the frontend directory:
 
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run build
 ```
 
-Open the local URL printed by Vite, usually:
+The frontend production build should complete successfully before deployment.
 
-http://localhost:5173
+## Security Considerations
 
-Keep the frontend development server and backend container running while testing the application.
+- Keep environment files and credentials out of version control.
+- Keep the S3 bucket private and use temporary signed URLs for image access.
+- Use verified Supabase tokens for authenticated API operations.
+- Restrict claim information to authorized users.
+- Use least-privilege IAM permissions for AWS resources.
+- Configure HTTPS, production CORS origins, and production authentication redirect URLs before public deployment.
 
-## Docker Implementation
+## Deployment Status
 
-The backend Dockerfile uses a Node.js Alpine base image, installs production dependencies, copies the backend source code, and starts the Express server. The frontend Dockerfile builds the Vite application and serves the static files with Nginx. Docker Compose runs both services together. Supabase continues to provide hosted authentication and database services.
+The project uses Supabase for database and authentication services and Amazon S3 for image storage. The frontend and backend currently support local execution through Docker Compose.
 
-## Current Deployment Status
+Deployment of the complete application to AWS is a separate step and requires production hosting, API configuration, secrets management, and HTTPS setup.
 
-- Frontend and backend can run together with Docker Compose, or the frontend can run through Vite with the backend in Docker.
-- Supabase provides authentication and database services.
-- The project source code is managed using Git and GitHub.
-- Deployment to AWS or another cloud hosting platform is a future step.
+## Project Purpose
 
-## Future Improvements
-
-- Deploy the backend container to a cloud server.
-- Host the frontend on a cloud static-hosting service.
-- Configure production environment variables and HTTPS.
-- Add automated testing and continuous deployment.
-
-## Academic Project
-
-**Project:** FindIt@Thapar  
-**Purpose:** A digital lost-and-found platform for the campus community.
-
+FindIt@Thapar demonstrates full-stack web development, REST API design, authentication, database-backed workflows, private cloud object storage, containerization, and version control in a campus-focused lost-and-found application.
