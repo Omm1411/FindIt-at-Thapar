@@ -31,25 +31,38 @@ FindIt@Thapar is a web application designed to help students report lost belongi
 
 ## Architecture
 
-The frontend communicates with the Express backend through HTTP API requests. Supabase provides authentication and PostgreSQL database services, while Amazon S3 stores uploaded item images.
+FindIt@Thapar follows a client-server architecture integrated with cloud services for authentication, database management, and image storage.
 
-```text
-                 Student / User
-                       |
-                       v
-              React + Vite Frontend
-                       |
-                       v
-                Express Backend
-                 /            \
-                v              v
-       Supabase Services     Amazon S3
-       - Authentication     - Item images
-       - PostgreSQL         - Private objects
-       - Claim records      - Signed URLs
+```mermaid
+flowchart TB
+    U["Student / User"]
+
+    subgraph APP["FindIt@Thapar Application"]
+        FE["Frontend<br/>React + Vite"]
+        BE["Backend API<br/>Node.js + Express"]
+    end
+
+    subgraph CLOUD["Cloud Services"]
+        AUTH["Supabase Auth<br/>User Authentication"]
+        DB[("Supabase PostgreSQL<br/>Listings and Claims")]
+        S3[("Amazon S3<br/>Private Image Storage")]
+    end
+
+    U --> FE
+    FE <-->|"HTTP / REST API"| BE
+    FE <-->|"Authentication"| AUTH
+    BE -->|"Database Operations"| DB
+    BE -->|"Upload / Retrieve Images"| S3
+    BE -->|"Verify Access Tokens"| AUTH
+
+    classDef user fill:#f5f5f5,stroke:#555,color:#111
+    classDef app fill:#dbeafe,stroke:#2563eb,color:#111
+    classDef cloud fill:#dcfce7,stroke:#16a34a,color:#111
+
+    class U user
+    class FE,BE app
+    class AUTH,DB,S3 cloud
 ```
-
-The application uses cloud services for authentication, database operations, and image storage. The frontend and backend can be run locally using Docker Compose.
 
 ## Getting Started
 
