@@ -1057,7 +1057,7 @@ return (
     <section className="creator-section" id="about-creator" aria-labelledby="creator-title">
       <div className="creator-copy">
         <p className="eyebrow">THE PERSON BEHIND THE PROJECT</p>
-        <h2 id="creator-title">Built by <span>Mrytyunjay.</span></h2>
+        <h2 id="creator-title">Built by <span>Mrytyunjay and Om Kaushik.</span></h2>
         <p>
           I created FindIt@Thapar to make it easier for the Thapar community
           to report lost belongings, share found items, and help them find their way home.
